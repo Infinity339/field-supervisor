@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Field Supervisor Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #111; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 14px; background: #1f2937; color: #fff; }
+  header .title { font-weight: 600; }
+  header .status { font-size: 12px; color: #9ca3af; margin-top: 2px; }
+  #map { flex: 1; min-height: 0; }
+  #panel { background: #fff; border-top: 1px solid #ddd; padding: 12px 14px; max-height: 38vh; overflow: auto; }
+  .btn { border: 0; border-radius: 8px; padding: 10px 14px; font-size: 15px; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
+  .btn-call { background: #16a34a; color: #fff; }
+  .btn-nav { background: #0ea5e9; color: #fff; }
+  .btn-primary { background: #2563eb; color: #fff; }
+  .btn-ghost { background: #e5e7eb; color: #111; }
+  .btn-ghost-dark { background: #374151; color: #fff; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .muted { color: #6b7280; font-size: 13px; margin-top: 3px; }
+  .pin { background: #2563eb; color: #fff; padding: 3px 7px; border-radius: 12px; font-size: 12px; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,.4); transform: translate(-50%, -110%); }
+  #login { position: fixed; inset: 0; background: #111827; display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 1000; }
+  .card { background: #fff; padding: 24px; border-radius: 14px; width: 100%; max-width: 360px; }
+  .card h2 { margin-bottom: 14px; }
+  input[type=text] { width: 100%; padding: 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 10px; }
+  .err { color: #dc2626; font-size: 14px; min-height: 18px; margin-top: 8px; }
+  .kml-item { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 14px; }
+  .kml-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hidden { display: none !important; }
+  hr { margin: 12px 0; border: 0; border-top: 1px solid #eee; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="card">
+    <h2>Supervisor Login</h2>
+    <input type="text" id="svId" placeholder="Supervisor ID (e.g. SV-001)" autocomplete="off">
+    <button class="btn btn-primary" id="loginBtn" style="width:100%">LOGIN</button>
+    <div class="err" id="loginErr"></div>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div>
+      <div class="title" id="hdrTitle">Supervisor</div>
+      <div class="status" id="status"></div>
+    </div>
+    <button class="btn btn-ghost-dark" id="logoutBtn">Logout</button>
+  </header>
+
+  <div id="map"></div>
+
+  <div id="panel">
+    <div>
+      <strong id="selName">Tap a worker on the map</strong>
+      <div class="muted" id="selPhone"></div>
+      <div class="muted" id="selTime"></div>
+      <div class="row" id="selButtons"></div>
+    </div>
+    <hr>
+    <div>
+      <div class="row" style="margin-top:0">
+        <label class="btn btn-ghost">Upload KML
+          <input type="file" id="kmlInput" accept=".kml" multiple style="display:none">
+        </label>
+        <button class="btn btn-ghost" id="refreshBtn">Refresh now</button>
+      </div>
+      <div class="muted">KML files stay in this browser only. They are never uploaded.</div>
+      <div id="kmlList"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ===== CONFIGURATION =====
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbykfgikE8Pb0VCd77viG7Z6hP5VMh2iSdmAS2uOg4hPwT7mvCqeQtpEYW6tgp3fHeyfkg/exec";
+const REFRESH_MS = 30000;
+
+// ===== STATE =====
+let supervisorID = "";
+let timer = null;
+let firstLoad = true;
+let selectedWorker = null;
+const kmlFiles = []; // { name, layer } - held in memory only
+
+const $ = id => document.getElementById(id);
+
+// ===== MAP =====
+const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+  attribution: "Tiles &copy; Esri", maxZoom: 19
+});
+const street = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: "&copy; OpenStreetMap", maxZoom: 19
+});
+const map = L.map("map").setView([31.5204, 74.3587], 14);
+sat.addTo(map);
+L.control.layers({ "Satellite": sat, "Street": street }).addTo(map);
+const workerLayer = L.layerGroup().addTo(map);
+
+// ===== HELPERS =====
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function api(params) {
+  const r = await fetch(APPS_SCRIPT_URL + "?" + new URLSearchParams(params));
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+// ===== LOGIN =====
+async function login() {
+  const id = $("svId").value.trim();
+  if (!id) return;
+  $("loginBtn").disabled = true;
+  $("loginErr").textContent = "Checking...";
+  try {
+    const d = await api({ action: "verify_supervisor", id });
+    if (d.status === "valid") {
+      supervisorID = id;
+      $("loginErr").textContent = "";
+      $("login").classList.add("hidden");
+      $("app").classList.remove("hidden");
+      $("hdrTitle").textContent = "Supervisor: " + (d.Name || id);
+      map.invalidateSize();
+      loadWorkers();
+      timer = setInterval(loadWorkers, REFRESH_MS);
+    } else {
+      $("loginErr").textContent = "Invalid Supervisor ID";
+    }
+  } catch (e) {
+    $("loginErr").textContent = "Could not reach server. Check your internet.";
+  } finally {
+    $("loginBtn").disabled = false;
+  }
+}
+
+function logout() {
+  clearInterval(timer);
+  timer = null;
+  supervisorID = "";
+  selectedWorker = null;
+  firstLoad = true;
+  workerLayer.clearLayers();
+  Object.keys(markers).forEach(id => delete markers[id]);
+  Object.keys(latestData).forEach(id => delete latestData[id]);
+  kmlFiles.forEach(k => map.removeLayer(k.layer));
+  kmlFiles.length = 0;
+  renderKmlList();
+  $("selName").textContent = "Tap a worker on the map";
+  $("selPhone").textContent = "";
+  $("selTime").textContent = "";
+  $("selButtons").innerHTML = "";
+  $("app").classList.add("hidden");
+  $("login").classList.remove("hidden");
+  $("svId").value = "";
+}
+
+// ===== WORKERS =====
+async function loadWorkers() {
+  try {
+    const list = await api({ action: "get_all_workers" });
+    renderWorkers(list);
+    $("status").textContent = "Updated " + new Date().toLocaleTimeString() + " · " + list.length + " workers";
+  } catch (e) {
+    $("status").textContent = "Update failed, retrying...";
+  }
+}
+
+const markers = {};    // WorkerID -> Leaflet marker
+const latestData = {}; // WorkerID -> latest worker record
+
+function makeIcon(w) {
+  return L.divIcon({
+    className: "",
+    html: `<div class="pin">${esc(w.Name || w.WorkerID)}</div>`,
+    iconSize: null,
+    iconAnchor: [0, 0]
+  });
+}
+
+function renderWorkers(list) {
+  const pts = [];
+  const seen = new Set();
+  list.forEach(w => {
+    const lat = parseFloat(w.Latitude), lon = parseFloat(w.Longitude);
+    if (!isFinite(lat) || !isFinite(lon)) return;
+    const id = w.WorkerID;
+    seen.add(id);
+    latestData[id] = w;
+    if (markers[id]) {
+      // Move the existing marker so any open popup stays open
+      markers[id].setLatLng([lat, lon]);
+      markers[id].setIcon(makeIcon(w));
+      markers[id].setPopupContent(popupHtml(w, lat, lon));
+    } else {
+      const m = L.marker([lat, lon], { icon: makeIcon(w) }).addTo(workerLayer);
+      m.bindPopup(popupHtml(w, lat, lon));
+      m.on("click", () => selectWorker(latestData[id]));
+      markers[id] = m;
+    }
+    pts.push([lat, lon]);
+  });
+  // Remove markers for workers no longer in the list
+  Object.keys(markers).forEach(id => {
+    if (!seen.has(id)) {
+      workerLayer.removeLayer(markers[id]);
+      delete markers[id];
+      delete latestData[id];
+    }
+  });
+  if (firstLoad && pts.length) {
+    map.fitBounds(pts, { padding: [40, 40], maxZoom: 16 });
+    firstLoad = false;
+  }
+  if (selectedWorker) {
+    const same = list.find(x => x.WorkerID === selectedWorker.WorkerID);
+    if (same) selectWorker(same);
+  }
+}
+
+// Popup shown directly on the map when a worker marker is tapped
+function popupHtml(w, lat, lon) {
+  const phone = String(w.Phone || "").trim();
+  const tel = phone.replace(/[^\d+]/g, "");
+  const seen = w.Timestamp ? new Date(w.Timestamp).toLocaleString() : "";
+  let html = `<strong>${esc(w.Name || w.WorkerID)}</strong>`;
+  html += `<br><span class="muted">${esc(phone || "No phone number")}</span>`;
+  if (seen) html += `<br><span class="muted">Last seen: ${esc(seen)}</span>`;
+  html += `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">`;
+  if (tel) html += `<a class="btn btn-call" href="tel:${tel}">CALL</a>`;
+  html += `<a class="btn btn-nav" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}">NAVIGATE</a>`;
+  html += `</div>`;
+  return html;
+}
+
+function selectWorker(w) {
+  selectedWorker = w;
+  const phone = String(w.Phone || "").trim();
+  const lat = parseFloat(w.Latitude), lon = parseFloat(w.Longitude);
+  $("selName").textContent = w.Name || w.WorkerID;
+  $("selPhone").textContent = phone ? "Phone: " + phone : "No phone number";
+  $("selTime").textContent = w.Timestamp ? "Last seen: " + new Date(w.Timestamp).toLocaleString() : "";
+  const buttons = [];
+  if (phone) {
+    const tel = phone.replace(/[^\d+]/g, "");
+    buttons.push(`<a class="btn btn-call" href="tel:${tel}">CALL</a>`);
+  }
+  buttons.push(`<a class="btn btn-nav" target="_blank" rel="noopener"
+    href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}">NAVIGATE</a>`);
+  $("selButtons").innerHTML = buttons.join("");
+}
+
+// ===== KML (device only) =====
+function textOf(el, tag) {
+  const n = el.getElementsByTagNameNS("*", tag)[0];
+  return n ? n.textContent.trim() : "";
+}
+
+function coordsOf(el) {
+  const n = el.getElementsByTagNameNS("*", "coordinates")[0];
+  if (!n) return [];
+  return n.textContent.trim().split(/\s+/).map(s => {
+    const [lon, lat] = s.split(",").map(Number);
+    return [lat, lon];
+  }).filter(([a, b]) => isFinite(a) && isFinite(b));
+}
+
+function parseKML(text) {
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length) throw new Error("Invalid KML");
+  const group = L.featureGroup();
+  for (const pm of doc.getElementsByTagNameNS("*", "Placemark")) {
+    const name = textOf(pm, "name");
+    const desc = textOf(pm, "description");
+    const popup = `<strong>${esc(name || "Unnamed")}</strong>${desc ? "<br>" + esc(desc) : ""}`;
+    for (const p of pm.getElementsByTagNameNS("*", "Point")) {
+      const c = coordsOf(p)[0];
+      if (c) L.circleMarker(c, { radius: 7, color: "#b45309", fillColor: "#f59e0b", fillOpacity: 0.9, weight: 2 })
+        .bindPopup(popup).addTo(group);
+    }
+    for (const ls of pm.getElementsByTagNameNS("*", "LineString")) {
+      const pts = coordsOf(ls);
+      if (pts.length > 1) L.polyline(pts, { color: "#f59e0b", weight: 4 }).bindPopup(popup).addTo(group);
+    }
+    for (const pg of pm.getElementsByTagNameNS("*", "Polygon")) {
+      const pts = coordsOf(pg); // first coordinates block is the outer boundary
+      if (pts.length > 2) L.polygon(pts, { color: "#b45309", fillColor: "#f59e0b", fillOpacity: 0.25, weight: 2 })
+        .bindPopup(popup).addTo(group);
+    }
+  }
+  return group;
+}
+
+function renderKmlList() {
+  const list = $("kmlList");
+  list.innerHTML = "";
+  kmlFiles.forEach((k, i) => {
+    const div = document.createElement("div");
+    div.className = "kml-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = map.hasLayer(k.layer);
+    cb.onchange = () => { if (cb.checked) k.layer.addTo(map); else map.removeLayer(k.layer); };
+    const sp = document.createElement("span");
+    sp.textContent = k.name;
+    const rm = document.createElement("button");
+    rm.className = "btn btn-ghost";
+    rm.textContent = "Remove";
+    rm.onclick = () => { map.removeLayer(k.layer); kmlFiles.splice(i, 1); renderKmlList(); };
+    div.append(cb, sp, rm);
+    list.append(div);
+  });
+}
+
+$("kmlInput").addEventListener("change", async e => {
+  for (const file of e.target.files) {
+    try {
+      const layer = parseKML(await file.text());
+      if (!layer.getLayers().length) {
+        alert(file.name + ": no points, lines or shapes found");
+        continue;
+      }
+      layer.addTo(map);
+      kmlFiles.push({ name: file.name, layer });
+      map.fitBounds(layer.getBounds(), { padding: [40, 40] });
+    } catch (err) {
+      alert(file.name + " could not be read as KML");
+    }
+  }
+  e.target.value = "";
+  renderKmlList();
+});
+
+// ===== EVENTS =====
+$("loginBtn").onclick = login;
+$("svId").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
+$("logoutBtn").onclick = logout;
+$("refreshBtn").onclick = loadWorkers;
+</script>
+</body>
+</html>
