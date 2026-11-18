@@ -19,6 +19,9 @@
   .panel-top .status { font-size: 12px; color: #6b7280; }
   #panel .btn { padding: 8px 12px; font-size: 14px; }
   #panel hr { margin: 8px 0; }
+  .btn-bar { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; overflow-x: auto; margin-top: 8px; padding-bottom: 2px; }
+  .btn-bar > * { flex: 0 0 auto; white-space: nowrap; }
+  .sel-buttons { display: contents; }
   .btn { border: 0; border-radius: 8px; padding: 10px 14px; font-size: 15px; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
   .btn-call { background: #16a34a; color: #fff; }
   .btn-nav { background: #0ea5e9; color: #fff; }
@@ -60,26 +63,22 @@
         <div class="title" id="hdrTitle">Supervisor</div>
         <div class="status" id="status"></div>
       </div>
-      <button class="btn btn-ghost-dark" id="logoutBtn">Logout</button>
     </div>
-    <hr>
     <div>
       <strong id="selName">Tap a worker on the map</strong>
       <div class="muted" id="selPhone"></div>
       <div class="muted" id="selTime"></div>
-      <div class="row" id="selButtons"></div>
     </div>
-    <hr>
-    <div>
-      <div class="row" style="margin-top:0">
-        <label class="btn btn-ghost">Upload KML
-          <input type="file" id="kmlInput" accept=".kml" multiple style="display:none">
-        </label>
-        <button class="btn btn-ghost" id="refreshBtn">Refresh now</button>
-      </div>
-      <div class="muted">KML files stay in this browser only. They are never uploaded.</div>
-      <div id="kmlList"></div>
+    <div class="btn-bar">
+      <button class="btn btn-ghost-dark" id="logoutBtn">Logout</button>
+      <span id="selButtons" class="sel-buttons"></span>
+      <label class="btn btn-ghost">Upload KML
+        <input type="file" id="kmlInput" accept=".kml" multiple style="display:none">
+      </label>
+      <button class="btn btn-ghost" id="refreshBtn">Refresh now</button>
     </div>
+    <div class="muted">KML files stay in this browser only. They are never uploaded.</div>
+    <div id="kmlList"></div>
   </div>
 </div>
 
@@ -144,7 +143,7 @@ function whatsappUrl(w) {
   if (!num) return "";
   const who = w.Name || w.WorkerID;
   const sup = supervisorName || supervisorID;
-  const text = `Hello ${who}, this is ${sup}. Please send me your current update.`;
+  const text = `Hello ${who}, this is ${sup}. Welcome.`;
   return `https://wa.me/${num}?text=${encodeURIComponent(text)}`;
 }
 
