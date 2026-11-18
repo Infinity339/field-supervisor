@@ -13,10 +13,16 @@
   header .title { font-weight: 600; }
   header .status { font-size: 12px; color: #9ca3af; margin-top: 2px; }
   #map { flex: 1; min-height: 0; }
-  #panel { background: #fff; border-top: 1px solid #ddd; padding: 12px 14px; max-height: 38vh; overflow: auto; }
+  #panel { background: #fff; border-top: 1px solid #ddd; padding: 8px 12px; max-height: 26vh; overflow: auto; box-shadow: 0 -2px 8px rgba(0,0,0,.15); }
+  .panel-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .panel-top .title { font-weight: 600; font-size: 14px; }
+  .panel-top .status { font-size: 12px; color: #6b7280; }
+  #panel .btn { padding: 8px 12px; font-size: 14px; }
+  #panel hr { margin: 8px 0; }
   .btn { border: 0; border-radius: 8px; padding: 10px 14px; font-size: 15px; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
   .btn-call { background: #16a34a; color: #fff; }
   .btn-nav { background: #0ea5e9; color: #fff; }
+  .btn-wa { background: #25d366; color: #fff; }
   .btn-primary { background: #2563eb; color: #fff; }
   .btn-ghost { background: #e5e7eb; color: #111; }
   .btn-ghost-dark { background: #374151; color: #fff; }
@@ -46,17 +52,17 @@
 </div>
 
 <div id="app" class="hidden">
-  <header>
-    <div>
-      <div class="title" id="hdrTitle">Supervisor</div>
-      <div class="status" id="status"></div>
-    </div>
-    <button class="btn btn-ghost-dark" id="logoutBtn">Logout</button>
-  </header>
-
   <div id="map"></div>
 
   <div id="panel">
+    <div class="panel-top">
+      <div>
+        <div class="title" id="hdrTitle">Supervisor</div>
+        <div class="status" id="status"></div>
+      </div>
+      <button class="btn btn-ghost-dark" id="logoutBtn">Logout</button>
+    </div>
+    <hr>
     <div>
       <strong id="selName">Tap a worker on the map</strong>
       <div class="muted" id="selPhone"></div>
@@ -85,6 +91,7 @@ const REFRESH_MS = 30000;
 
 // ===== STATE =====
 let supervisorID = "";
+let supervisorName = "";
 let timer = null;
 let firstLoad = true;
 let selectedWorker = null;
@@ -116,6 +123,31 @@ async function api(params) {
   return r.json();
 }
 
+// Phone digits for tel: links (keeps leading +)
+function telOf(phone) {
+  return String(phone || "").replace(/[^\d+]/g, "");
+}
+
+// WhatsApp needs international digits only, e.g. 923001234567.
+// Converts 00xxx and local 03xx numbers (Pakistan) to international form.
+function waOf(phone) {
+  let d = String(phone || "").replace(/\D/g, "");
+  if (!d) return "";
+  if (d.startsWith("00")) d = d.slice(2);
+  else if (d.startsWith("0")) d = "92" + d.slice(1);
+  return d;
+}
+
+// Prefilled WhatsApp message. Worker can edit it before sending.
+function whatsappUrl(w) {
+  const num = waOf(w.Phone);
+  if (!num) return "";
+  const who = w.Name || w.WorkerID;
+  const sup = supervisorName || supervisorID;
+  const text = `Hello ${who}, this is ${sup}. Please send me your current update.`;
+  return `https://wa.me/${num}?text=${encodeURIComponent(text)}`;
+}
+
 // ===== LOGIN =====
 async function login() {
   const id = $("svId").value.trim();
@@ -126,10 +158,11 @@ async function login() {
     const d = await api({ action: "verify_supervisor", id });
     if (d.status === "valid") {
       supervisorID = id;
+      supervisorName = d.Name || id;
       $("loginErr").textContent = "";
       $("login").classList.add("hidden");
       $("app").classList.remove("hidden");
-      $("hdrTitle").textContent = "Supervisor: " + (d.Name || id);
+      $("hdrTitle").textContent = "Supervisor: " + supervisorName;
       map.invalidateSize();
       loadWorkers();
       timer = setInterval(loadWorkers, REFRESH_MS);
@@ -147,6 +180,7 @@ function logout() {
   clearInterval(timer);
   timer = null;
   supervisorID = "";
+  supervisorName = "";
   selectedWorker = null;
   firstLoad = true;
   workerLayer.clearLayers();
@@ -169,7 +203,7 @@ async function loadWorkers() {
   try {
     const list = await api({ action: "get_all_workers" });
     renderWorkers(list);
-    $("status").textContent = "Updated " + new Date().toLocaleTimeString() + " · " + list.length + " workers";
+    $("status").textContent = "Updated " + new Date().toLocaleTimeString() + " Â· " + list.length + " workers";
   } catch (e) {
     $("status").textContent = "Update failed, retrying...";
   }
@@ -227,17 +261,27 @@ function renderWorkers(list) {
   }
 }
 
+// Buttons shared by the map popup and the bottom panel
+function actionButtonsHtml(w, lat, lon) {
+  const phone = String(w.Phone || "").trim();
+  const tel = telOf(phone);
+  const wa = whatsappUrl(w);
+  let html = "";
+  if (tel) html += `<a class="btn btn-call" href="tel:${tel}">CALL</a>`;
+  if (wa) html += `<a class="btn btn-wa" target="_blank" rel="noopener" href="${esc(wa)}">WHATSAPP</a>`;
+  html += `<a class="btn btn-nav" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}">NAVIGATE</a>`;
+  return html;
+}
+
 // Popup shown directly on the map when a worker marker is tapped
 function popupHtml(w, lat, lon) {
   const phone = String(w.Phone || "").trim();
-  const tel = phone.replace(/[^\d+]/g, "");
   const seen = w.Timestamp ? new Date(w.Timestamp).toLocaleString() : "";
   let html = `<strong>${esc(w.Name || w.WorkerID)}</strong>`;
   html += `<br><span class="muted">${esc(phone || "No phone number")}</span>`;
   if (seen) html += `<br><span class="muted">Last seen: ${esc(seen)}</span>`;
   html += `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">`;
-  if (tel) html += `<a class="btn btn-call" href="tel:${tel}">CALL</a>`;
-  html += `<a class="btn btn-nav" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}">NAVIGATE</a>`;
+  html += actionButtonsHtml(w, lat, lon);
   html += `</div>`;
   return html;
 }
@@ -249,14 +293,7 @@ function selectWorker(w) {
   $("selName").textContent = w.Name || w.WorkerID;
   $("selPhone").textContent = phone ? "Phone: " + phone : "No phone number";
   $("selTime").textContent = w.Timestamp ? "Last seen: " + new Date(w.Timestamp).toLocaleString() : "";
-  const buttons = [];
-  if (phone) {
-    const tel = phone.replace(/[^\d+]/g, "");
-    buttons.push(`<a class="btn btn-call" href="tel:${tel}">CALL</a>`);
-  }
-  buttons.push(`<a class="btn btn-nav" target="_blank" rel="noopener"
-    href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}">NAVIGATE</a>`);
-  $("selButtons").innerHTML = buttons.join("");
+  $("selButtons").innerHTML = actionButtonsHtml(w, lat, lon);
 }
 
 // ===== KML (device only) =====
